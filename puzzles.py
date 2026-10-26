@@ -502,6 +502,38 @@ def softmax_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
 
     off_i = block_id_i * B0 + tl.arange(0, B0) # [B0]
     M = tl.full((B0, ), -float("inf"), tl.float32)
+    d = tl.zeros((B0, ), dtype=tl.float32) # [B0]
+    for j in tl.range(0, T, B1):
+        off_j = j + tl.arange(0, B1) # [B1]
+        mask_ij = (off_i < N0)[:, None] & (off_j < T) # [B0, B1]
+        off = off_i[:, None] * T + off_j[None, :] # [B0, B1]
+        x_ = tl.load(x_ptr + off, mask=mask_ij, other=-float("inf")) # [B0, B1]
+        block_m = tl.max(x_, axis=1)
+        new_m = tl.maximum(M, block_m) # [B0]
+        d = d * tl.exp2(log2_e * (M - new_m)) + tl.sum(tl.exp2(log2_e * (x_ - new_m[:, None])), axis=1) # [B0]
+        M = new_m
+
+    for j in tl.range(0, T, B1):
+        off_j = j + tl.arange(0, B1) # [B1]
+        mat_off = off_i[:, None] * T + off_j[None, :] # [B0, B1]
+        mask = (off_i < N0)[:, None] & (off_j < T)
+        x_ = tl.load(x_ptr + mat_off, mask=mask, other=-float("inf")) # [B0, B1]
+        tl.store(z_ptr + mat_off, tl.exp2(log2_e * (x_ - M[:, None])) / d[:, None], mask=mask)
+
+    return
+
+
+@triton.jit
+def softmax_kernel_brute_force(
+    x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr
+):
+    """3 loops ver."""
+    block_id_i = tl.program_id(0)
+    log2_e = 1.44269504
+    # Finish me!
+
+    off_i = block_id_i * B0 + tl.arange(0, B0) # [B0]
+    M = tl.full((B0, ), -float("inf"), tl.float32)
     for j in tl.range(0, T, B1):
         off_j = j + tl.arange(0, B1) # [B1]
         mat_off = off_i[:, None] * T + off_j[None, :] # [B0, B1]
@@ -526,17 +558,6 @@ def softmax_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
         x_ = tl.load(x_ptr + mat_off, mask=mask, other=-float("inf")) # [B0, B1]
         tl.store(z_ptr + mat_off, tl.exp2(log2_e * (x_ - M[:, None])) / sum_[:, None], mask=mask)
 
-    return
-
-
-@triton.jit
-def softmax_kernel_brute_force(
-    x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr
-):
-    """3 loops ver."""
-    block_id_i = tl.program_id(0)
-    log2_e = 1.44269504
-    # Finish me!
     return
 
 
