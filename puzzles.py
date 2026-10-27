@@ -596,8 +596,80 @@ def flashatt_kernel(
     log2_e = 1.44269504
     myexp = lambda x: tl.exp2(log2_e * x)
     # Finish me!
+
+    off_i = block_id_i * B0 + tl.arange(0, B0) # [B0]
+    mask_i = off_i < N0 # [B0]
+    q_ = tl.load(q_ptr + off_i, mask_i, other=0.0) # [B0]
+
+    x_max = tl.full((B0,), -float("inf"), dtype=tl.float32) # [B0]
+    denom = tl.zeros((B0, ), tl.float32) # [B0]
+    numer = tl.zeros((B0, ), tl.float32) # [B0]
+    for j in tl.range(0, T, B1):
+        off_j = j + tl.arange(0, B1) # [B1]
+
+        k_ = tl.load(k_ptr + off_j, off_j<T, other=0.0) # [B1]
+        v_ = tl.load(v_ptr + off_j, off_j<T, other=0.0) # [B1]
+
+        x_block = q_[:, None] * k_[None, :] # [B0, B1]
+        x_block = tl.where(off_j[None, :] < T, x_block, -float("inf"))
+
+        block_max = tl.max(x_block, axis=1) # [B0]
+        m_new = tl.maximum(x_max, block_max) # [B0]
+
+        alpha = myexp(x_max - m_new) # [B0]
+        p = myexp(x_block - m_new[:, None]) # [B0, B1]
+
+        denom = denom * alpha + tl.sum(p, axis=1)
+        numer = numer * alpha + tl.sum(p * v_[None, :], axis=1)
+
+        x_max = m_new
+    o = numer / denom
+    tl.store(z_ptr + off_i, o, mask_i)
     return
 
+
+@triton.jit
+def flashatt_kernel_brute_force(
+    q_ptr, k_ptr, v_ptr, z_ptr, N0, T, B0: tl.constexpr, B1: tl.constexpr
+):
+    block_id_i = tl.program_id(0)
+    log2_e = 1.44269504
+    myexp = lambda x: tl.exp2(log2_e * x)
+    # Finish me!
+
+    off_i = block_id_i * B0 + tl.arange(0, B0) # [B0]
+    mask_i = off_i < N0 # [B0]
+    q_ = tl.load(q_ptr + off_i, mask_i, other=0.0) # [B0]
+
+    x_max = tl.full((B0,), -float("inf"), dtype=tl.float32) # [B0]
+    for j in tl.range(0, T, B1):
+        off_j = j + tl.arange(0, B1) # [B1]
+
+        k_ = tl.load(k_ptr + off_j, off_j<T, other=0.0) # [B1]
+        x_block = q_[:, None] * k_[None, :] # [B0, B1]
+        x_block = tl.where(off_j[None, :] < T, x_block, -float("inf"))
+
+        block_max = tl.max(x_block, axis=1) # [B0]
+        x_max = tl.maximum(x_max, block_max) # [B0]
+
+    denom = tl.zeros((B0, ), tl.float32) # [B0]
+    numer = tl.zeros((B0, ), tl.float32) # [B0]
+    for j in tl.range(0, T, B1):
+        off_j = j + tl.arange(0, B1) # [B1]
+
+        k_ = tl.load(k_ptr + off_j, off_j<T, other=0.0) # [B1]
+        x_block = q_[:, None] * k_[None, :] # [B0, B1]
+        x_block = tl.where(off_j[None, :] < T, x_block - x_max[:, None], -float("inf")) # [B0, B1]
+        x_exp = myexp(x_block) # [B0, B1]
+        v_ = tl.load(v_ptr + off_j, off_j<T, other=0.0) # [B1]
+
+        denom += tl.sum(x_exp, axis=1)
+        numer += tl.sum(x_exp * v_[None, :], axis=1)
+
+    o = numer / denom
+    tl.store(z_ptr + off_i, o, mask_i)
+
+    return
 
 r"""
 ## Puzzle 10: Two Dimensional Convolution
